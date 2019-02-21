@@ -20,8 +20,16 @@ ext {
     apply from: 'cordova.gradle'
     cdvCompileSdkVersion = privateHelpers.getProjectTarget()
     cdvBuildToolsVersion = privateHelpers.findLatestInstalledBuildTools()
+    minSdkVersion = 19
 }
 
+/* 解决Could not find com.android.tools.build:aapt2:3.3.0-5013011.的问题*/
+allprojects {
+    repositories {
+        google()
+        jcenter()
+    }
+}
 buildscript {
     repositories {
         google()
