@@ -19,14 +19,22 @@
 package org.apache.cordova;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.media.MediaPlayer;
 import android.net.Uri;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.webkit.WebChromeClient;
+import android.webkit.WebView;
 import android.widget.FrameLayout;
 
 import org.apache.cordova.engine.SystemWebViewEngine;
@@ -44,7 +52,7 @@ import java.util.Set;
  * Main class for interacting with a Cordova webview. Manages plugins, events, and a CordovaWebViewEngine.
  * Class uses two-phase initialization. You must call init() before calling any other methods.
  */
-public class CordovaWebViewImpl implements CordovaWebView {
+public class CordovaWebViewImpl implements CordovaWebView, MediaPlayer.OnPreparedListener, MediaPlayer.OnCompletionListener, MediaPlayer.OnErrorListener {
 
     public static final String TAG = "CordovaWebViewImpl";
 
@@ -71,6 +79,11 @@ public class CordovaWebViewImpl implements CordovaWebView {
     private WebChromeClient.CustomViewCallback mCustomViewCallback;
 
     private Set<Integer> boundKeyCodes = new HashSet<Integer>();
+
+    // Used for full screen.
+    private Activity activity;
+    private Window window;
+    private View decorView;
 
     public static CordovaWebViewEngine createEngine(Context context, CordovaPreferences preferences) {
         String className = preferences.getString("webview", SystemWebViewEngine.class.getCanonicalName());
@@ -116,6 +129,10 @@ public class CordovaWebViewImpl implements CordovaWebView {
         pluginManager.addService(CoreAndroid.PLUGIN_NAME, "org.apache.cordova.CoreAndroid");
         pluginManager.init();
 
+        // Used for full screen.
+        activity = cordova.getActivity();
+        window = activity.getWindow();
+        decorView = window.getDecorView();
     }
 
     @Override
@@ -244,6 +261,137 @@ public class CordovaWebViewImpl implements CordovaWebView {
         }
     }
 
+    protected void resetWindow()
+    {
+        decorView.setOnFocusChangeListener(null);
+        decorView.setOnSystemUiVisibilityChangeListener(null);
+
+        window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+    }
+
+    /**
+     * Are any of the features of this plugin supported?
+     */
+    protected boolean isSupported()
+    {
+        boolean supported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH;
+        return supported;
+    }
+
+    /**
+     * Is immersive mode supported?
+     */
+    protected boolean isImmersiveModeSupported() {
+        boolean supported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT;
+        return supported;
+    }
+
+    /**
+     * Show system UI
+     */
+    protected boolean showSystemUI()
+    {
+        if (!isSupported())
+        {
+            LOG.d(TAG, "showSystemUI Unsupported");
+            return false;
+        }
+
+        activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    resetWindow();
+
+                    // Remove translucent theme from bars
+
+                    window.clearFlags
+                            (
+                                    WindowManager.LayoutParams.FLAG_FULLSCREEN
+                                            | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                                            | WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION
+                                            | WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS
+                            );
+
+                    // Update system UI
+
+                    decorView.setOnSystemUiVisibilityChangeListener(null);
+                    decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                }
+                catch (Exception e)
+                {
+                    LOG.e(TAG, e.getMessage());
+                }
+            }
+        });
+
+        return true;
+    }
+    /**
+     * Hide system UI and switch to immersive mode (Android 4.4+ only)
+     */
+    protected boolean immersiveMode() {
+        CordovaActivity context = (CordovaActivity)engine.getCordovaWebView().getContext();
+
+        if (!isImmersiveModeSupported())
+        {
+            LOG.d(TAG, "Immersive mode unsupported");
+            return false;
+        }
+
+        activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    resetWindow();
+
+                    final int uiOptions =
+                            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+
+                    window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    decorView.setSystemUiVisibility(uiOptions);
+
+                    decorView.setOnFocusChangeListener(new View.OnFocusChangeListener()
+                    {
+                        @Override
+                        public void onFocusChange(View v, boolean hasFocus)
+                        {
+                            if (hasFocus)
+                            {
+                                decorView.setSystemUiVisibility(uiOptions);
+                            }
+                        }
+                    });
+
+                    decorView.setOnSystemUiVisibilityChangeListener(new View.OnSystemUiVisibilityChangeListener()
+                    {
+                        @Override
+                        public void onSystemUiVisibilityChange(int visibility)
+                        {
+                            decorView.setSystemUiVisibility(uiOptions);
+                        }
+                    });
+                }
+                catch (Exception e) {
+                    LOG.e(TAG, e.getMessage());
+                }
+            }
+        });
+
+        return true;
+    }
+
     @Override
     @Deprecated
     public void showCustomView(View view, WebChromeClient.CustomViewCallback callback) {
@@ -272,6 +420,60 @@ public class CordovaWebViewImpl implements CordovaWebView {
         // Finally show the custom view container.
         parent.setVisibility(View.VISIBLE);
         parent.bringToFront();
+
+        // A video wants to be shown
+        FrameLayout frameLayout = (FrameLayout) view;
+        View focusedChild = frameLayout.getFocusedChild();
+
+        // 下面的代码参考https://github.com/cprcrack/VideoEnabledWebView.git
+        if (focusedChild instanceof android.widget.VideoView)
+        {
+            android.widget.VideoView videoView = (android.widget.VideoView) focusedChild;
+
+            // Handle all the required events
+            // android.widget.VideoView (typically API level <11)
+            videoView.setOnPreparedListener(this);
+            videoView.setOnCompletionListener(this);
+            videoView.setOnErrorListener(this);
+        }
+        else
+        {
+            // Other classes, including:
+            // - android.webkit.HTML5VideoFullScreen$VideoSurfaceView, which inherits from android.view.SurfaceView (typically API level 11-18)
+            // - android.webkit.HTML5VideoFullScreen$VideoTextureView, which inherits from android.view.TextureView (typically API level 11-18)
+            // - com.android.org.chromium.content.browser.ContentVideoView$VideoSurfaceView, which inherits from android.view.SurfaceView (typically API level 19+)
+
+            // Handle HTML5 video ended event only if the class is a SurfaceView
+            // Test case: TextureView of Sony Xperia T API level 16 doesn't work fullscreen when loading the javascript below
+            WebView webView = (WebView)engine.getView(); // 强行指定...
+            if (webView != null && webView.getSettings().getJavaScriptEnabled() && focusedChild instanceof SurfaceView)
+            {
+                // Run javascript code that detects the video end and notifies the Javascript interface
+                String js = "javascript:";
+                js += "var _ytrp_html5_video_last;";
+                js += "var _ytrp_html5_video = document.getElementsByTagName('video')[0];";
+                js += "if (_ytrp_html5_video != undefined && _ytrp_html5_video != _ytrp_html5_video_last) {";
+                {
+                    js += "_ytrp_html5_video_last = _ytrp_html5_video;";
+                    js += "function _ytrp_html5_video_ended() {";
+                    {
+                        js += "_VideoEnabledWebView.notifyVideoEnd();"; // Must match Javascript interface name and method of VideoEnableWebView
+                    }
+                    js += "}";
+                    js += "_ytrp_html5_video.addEventListener('ended', _ytrp_html5_video_ended);";
+                }
+                js += "}";
+                webView.loadUrl(js);
+            }
+        }
+
+        // 设置沉浸式全屏的代码参考cordova-plugin-fullscreen
+        // https://github.com/mesmotronic/cordova-plugin-fullscreen.git
+        immersiveMode();
+
+        // 设置横屏
+        //CordovaActivity context = (CordovaActivity)engine.getCordovaWebView().getContext();
+        cordova.getActivity().setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
     }
 
     @Override
@@ -292,6 +494,32 @@ public class CordovaWebViewImpl implements CordovaWebView {
 
         // Show the content view.
         engine.getView().setVisibility(View.VISIBLE);
+
+        CordovaActivity context = (CordovaActivity)engine.getCordovaWebView().getContext();
+
+        // 设置竖屏
+        context.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+
+        // 取消全屏
+        showSystemUI();
+    }
+
+    @Override
+    public void onPrepared(MediaPlayer mp) // Video will start playing, only called in the case of android.widget.VideoView (typically API level <11)
+    {
+        // Do later.
+    }
+
+    @Override
+    public void onCompletion(MediaPlayer mp) // Video finished playing, only called in the case of android.widget.VideoView (typically API level <11)
+    {
+        hideCustomView();
+    }
+
+    @Override
+    public boolean onError(MediaPlayer mp, int what, int extra) // Error while playing video, only called in the case of android.widget.VideoView (typically API level <11)
+    {
+        return false; // By returning false, onCompletion() will be called
     }
 
     @Override

@@ -186,6 +186,12 @@ public class SystemWebChromeClient extends WebChromeClient {
         parentEngine.getCordovaWebView().showCustomView(view, callback);
     }
 
+    // Available in API level 14+, deprecated in API level 18+
+    @Override @SuppressWarnings("deprecation")
+    public void onShowCustomView(View view, int requestedOrientation, WebChromeClient.CustomViewCallback callback) {
+        onShowCustomView(view, callback);
+    }
+
     @Override
     @SuppressWarnings("deprecation")
     public void onHideCustomView() {
